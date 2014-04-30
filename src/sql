@@ -1,0 +1,270 @@
+###########################################
+### Benchmarks
+###########################################
+Benchmarks
+| bench_id (unique)
+| canonical_name (unique)
+| expected_result
+| name
+
+create table Benchmarks
+(
+bench_id int NOT NULL,
+canonical_name varchar(500) NOT NULL UNIQUE,
+name varchar(500),
+expected_result varchar(100),
+PRIMARY KEY (bench_id)
+) ENGINE=InnoDB;
+
+###########################################
+### Spaces
+###########################################
+
+Spaces
+| space_id (unqiue)
+| parent_space_id
+| name
+| active
+| path_closed (have SpacePaths been generated using this as a starting_path)
+
+create table Spaces
+(
+space_id int NOT NULL,
+parent_space_id int,
+name varchar(500),
+active bit,
+path_closed bit NOT NULL DEFAULT 0,
+PRIMARY KEY (space_id)
+) ENGINE=InnoDB;
+
+SpaceToBenchPairs
+| space_id
+| bench_id
+
+create table SpaceToBenchPairs
+(
+space_id int NOT NULL,
+bench_id int NOT NULL,
+FOREIGN KEY (space_id) REFERENCES Spaces(space_id),
+FOREIGN KEY (bench_id) REFERENCES Benchmarks(bench_id)
+) ENGINE=InnoDB;
+
+###########################################
+### SpacePaths
+###########################################
+SpacePaths
+| space_path_id (unique)
+| start_space_id
+| end_space_id
+| path_string
+
+create table SpacePaths
+(
+space_path_id int NOT NULL AUTO_INCREMENT,
+start_space_id int NOT NULL,
+end_space_id int NOT NULL,
+path_string varchar(500),
+PRIMARY KEY (space_path_id),
+FOREIGN KEY (start_space_id) REFERENCES Spaces(space_id),
+FOREIGN KEY (end_space_id) REFERENCES Spaces(space_id)
+) ENGINE=InnoDB;
+
+
+###########################################
+### Solvers and Configurations
+###########################################
+Solvers
+| solver_id (unique)
+| space_id
+| name
+| description
+| version
+| timestamp
+| recycled (is the solver currently active)
+
+create table Solvers
+(
+solver_id int NOT NULL,
+space_id int NOT NULL,
+name varchar(255),
+description varchar(255),
+version varchar(255),
+timestamp timestamp default CURRENT_TIMESTAMP,
+recycled bit NOT NULL DEFAULT 0,
+PRIMARY KEY (solver_id),
+FOREIGN KEY (space_id) REFERENCES Spaces(space_id)
+) ENGINE=InnoDB;
+
+
+Configurations
+| config_id (unique)
+| solver_id
+| name
+| description
+| timestamp
+
+create table Configurations
+(
+config_id int NOT NULL,
+solver_id int NOT NULL,
+name varchar(255),
+description varchar(255),
+timestamp timestamp default CURRENT_TIMESTAMP,
+PRIMARY KEY (config_id),
+FOREIGN KEY (solver_id) REFERENCES Solvers(solver_id)
+) ENGINE=InnoDB;
+
+###########################################
+### Problem Sets
+###########################################
+
+ProblemSets
+| problem_set_id
+| space_id
+| name
+| description
+
+create table ProblemSets
+(
+problem_set_id int NOT NULL AUTO_INCREMENT,
+space_id int NOT NULL,
+name varchar(255),
+description varchar(255),
+timestamp timestamp default CURRENT_TIMESTAMP,
+PRIMARY KEY (problem_set_id),
+UNIQUE KEY (space_id),
+FOREIGN KEY (space_id) REFERENCES Spaces(space_id)
+) ENGINE=InnoDB;
+
+
+ProblemSetToBenchmarks
+| problem_set_to_benchmark_id
+| problem_set_id
+| bench_id
+| space_path_id
+
+create table ProblemSetToBenchmarks
+(
+problem_set_to_benchmark_id int NOT NULL AUTO_INCREMENT,
+problem_set_id int NOT NULL,
+bench_id int NOT NULL,
+space_path_id int NOT NULL,
+PRIMARY KEY (problem_set_to_benchmark_id),
+UNIQUE KEY problem_set_bench_pair (problem_set_id, bench_id),
+FOREIGN KEY (problem_set_id) REFERENCES ProblemSets(problem_set_id),
+FOREIGN KEY (bench_id) REFERENCES Benchmarks(bench_id),
+FOREIGN KEY (space_path_id) REFERENCES SpacePaths(space_path_id)
+) ENGINE=InnoDB;
+
+###########################################
+### Jobs
+###########################################
+
+Job
+| job_id (unique)
+| problem_set_id
+| name
+| description
+| cpu_time_limit
+| wc_time_limit
+| memory_limit
+| email
+| timestamp
+
+create table Jobs
+(
+job_id int NOT NULL,
+problem_set_id int NOT NULL,
+name varchar(255),
+description varchar(255),
+cpu_time_limit float,
+wc_time_limit float,
+memory_limit int,
+email varchar(255),
+timestamp timestamp default CURRENT_TIMESTAMP,
+PRIMARY KEY (job_id),
+FOREIGN KEY (problem_set_id) REFERENCES ProblemSets(problem_set_id)
+) ENGINE=InnoDB;
+
+JobConfigurationPairs
+| job_config_pair_id (unique)
+| job_id
+| config_id  (composite key for job id and config_id)
+
+create table JobConfigurationPairs
+(
+job_config_pair_id int NOT NULL AUTO_INCREMENT,
+job_id int NOT NULL,
+config_id int NOT NULL,
+PRIMARY KEY (job_config_pair_id),
+UNIQUE KEY pair (job_id, config_id),
+FOREIGN KEY (job_id) REFERENCES Jobs(job_id),
+FOREIGN KEY (config_id) REFERENCES Configurations(config_id)
+) ENGINE=InnoDB;
+
+###########################################
+### Results
+###########################################
+Results
+| result_id (unique id from star exec)
+| job_config_pair_id
+| problem_set_to_benchmark_id
+| result varchar(128)
+| status
+| cpu_time float
+| wallclock_time float
+| result varchar(128)
+| ... add memory as stats?
+
+create table Results
+(
+result_id int NOT NULL, # pair id in star exec
+job_config_pair_id int NOT NULL,
+problem_set_to_benchmark_id int NOT NULL,
+result varchar(127),
+status int,
+cpu_time float,
+wallclock_time float,
+has_stats bit NOT NULL DEFAULT 0,
+PRIMARY KEY (result_id),
+UNIQUE KEY job_config_problem_set_pair (job_config_pair_id, problem_set_to_benchmark_id),
+FOREIGN KEY (job_config_pair_id) REFERENCES JobConfigurationPairs(job_config_pair_id),
+FOREIGN KEY (problem_set_to_benchmark_id) REFERENCES ProblemSetToBenchmarks(problem_set_to_benchmark_id)
+) ENGINE=InnoDB;
+
+###########################################
+### Statistics
+###########################################
+Statistics
+| stat_id
+| name
+| type ENUM('STAT_FLOAT', 'STAT_STR', 'STAT_INT')
+
+create table Statistics
+(
+stat_id int NOT NULL AUTO_INCREMENT,
+name varchar(255) NOT NULL,
+stat_type ENUM('STAT_FLOAT', 'STAT_STR', 'STAT_INT') NOT NULL,
+PRIMARY KEY (stat_id),
+UNIQUE KEY (name)
+) ENGINE=InnoDB;
+
+
+StatisticResults
+| result_id
+| stat_id
+| int_value
+| float_value
+| string_value
+
+create table StatisticResults
+(
+result_id int NOT NULL,
+stat_id int NOT NULL,
+int_value int,
+float_value float,
+string_value varchar(511),
+UNIQUE KEY (result_id, stat_id),
+FOREIGN KEY (result_id) REFERENCES Results(result_id),
+FOREIGN KEY (stat_id) REFERENCES Statistics(stat_id)
+) ENGINE=InnoDB;
