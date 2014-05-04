@@ -1,145 +1,42 @@
-#!/usr/bin/env python
 
-#import starexec_utils as util
-#import config
+from starexecpipe import *
 import MySQLdb as mdb
 import os
-import argparse
 import csv
 import tempfile
-import progressbar
-import subprocess
 import zipfile
+import wrappedprogressbar
 
-def initializeProgressBar(max_value):
-    """Set up the command-line progress bar with max_value
-    """
-    bar = progressbar.ProgressBar(maxval=max_value, widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
-    return bar
+class TelescopeCredentials:
+    def __init__(self, dbserver, dbuser, dbpassword, dbtable):
+        self.dbserver  = dbserver
+        self.dbuser = dbuser
+        self.dbpassword = dbpassword
+        self.dbtable = dbtable
+    def server(self):
+        return self.dbserver
+    def user(self):
+        return self.dbuser
+    def password(self):
+        return self.dbpassword
+    def table(self):
+        return self.dbtable
+    def __str__(self):
+        s = 'TelescopeCredentials('
+        s += repr(self.server())+', '
+        s += repr(self.user())+', '
+        s += repr(self.password())+', '
+        s += repr(self.table())+')'
+        return s
 
-def numLinesInFile(fname):
-    """ Counts the number of lines in the given file.
-    """
-    with open(fname) as f:
-        for i, l in enumerate(f):
-            pass
-    return i + 1
-
-def lineIntoMap(ln):
-    """id=1715 : name=March 7 2013\n"""
-    pairs = ln.split(':')
-    m = dict()
-    for p in pairs:
-        (key,eq,val) = p.partition('=')
-        assert eq != ''
-        m[key.strip()] = val.strip()
-    return m
-
-def idnameMapIntoPairs(m):
-    assert 'id' in m
-    assert 'name' in m
-    return (int(m['id']), m['name'])
-
-class StarExecPipe:
-    """A pipe to execute a sequence of star exec commands"""
-    cmd_prompt='StarCom> '
-    blank_cmd_prompt=cmd_prompt+'\n'
-    def __init__(self, starexeccommand, username, password, addr):
-        args = ['java','-jar',starexeccommand]
-        self.pipe = subprocess.Popen(args, shell=False, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=1)
-        ln = self.readLine() # consume Last update = ..
-        ln = self.readLine() # consume <blankline>
-        retids = self.prompt('returnids')
-        print "retids",  repr(retids)
-        resp = self.prompt('login u='+username+' p='+password+' addr='+addr)
-        print "Logging", username , "into starexec ", addr
-        print "resp", repr(resp)
-        if not self.loginResponseIsOkay(resp):
-            self.close()
-            print "login failed"
-            raise Exception("login failed", resp)
+def connectUsingCredentials(creds):
+    assert isinstance(creds, TelescopeCredentials)
+    return mdb.connect(creds.server(), creds.user(), creds.password(), creds.table())
 
 
-    def __enter__(self):
-        assert self.is_open()
-        return self;
-
-    def __exit__(self, type, value, traceback):
-        self.close()
-
-    def is_open(self):
-        return self.pipe.returncode == None
-
-    def close(self):
-        self.pipe.poll()
-        if self.is_open():
-            resp = self.pipe.communicate("logout")
-            print "Logging out of star exec", resp
-
-    def readLine(self):
-        """Do not call this from outside of the class"""
-        assert self.is_open()
-        return self.pipe.stdout.readline()
-
-    def writeLine(self, line):
-        """Do not call this from outside of the class"""
-        assert self.is_open()
-        print >> self.pipe.stdin, line
-        self.pipe.stdin.flush()
-
-    def prompt(self, cmd):
-        self.writeLine(cmd) # send the command
-        #consume exactly one command prompt
-        first = self.readLine()
-        ind = first.find(StarExecPipe.cmd_prompt)
-        assert ind == 0
-        pos = len(StarExecPipe.cmd_prompt)
-        lines = []
-        line = first[pos:]
-        #print "sub", pos, repr(line)
-        #print "first", repr(first)
-
-        while line != '\n':
-            #print "read", len(lines), repr(line)
-            # stop at the first empty line
-            lines.append(line)
-            #print lines
-            line = self.readLine()
-        return lines
-
-    def lssubspaces(self, space_id):
-        lines = self.prompt('lssubspaces id='+str(space_id))
-        #print lines
-        return [ idnameMapIntoPairs(lineIntoMap(x)) for x in lines ]
-
-    def lsbenchmarks(self, space_id):
-        lines = self.prompt('lsbenchmarks id='+str(space_id))
-        #print lines
-        return [ idnameMapIntoPairs(lineIntoMap(x)) for x in lines ]
-
-    def lssolvers(self, space_id):
-        """lssolvers id=14436
-        id=668 : name=test (recycled)
-        id=669 : name=took2 (recycled)
-        id=670 : name=took3 (recycled)
-        id=671 : name=took4"""
-        lines = self.prompt('lssolvers id='+str(space_id))
-        pair_list = [ idnameMapIntoPairs(lineIntoMap(x)) for x in lines ]
-        rec = [(x,y) for x,y in pair_list if y.endswith("(recycled)")]
-        notrec = [(x,y) for x,y in pair_list if not y.endswith("(recycled)")]
-        return rec, notrec
-
-    def getjobpair(self, jobpair, out, ow):
-        query = 'getjobpair id='+str(jobpair)+' out='+out
-        if ow is not None:
-            query += ' ow='
-        #print "issuing", query
-        resp = self.prompt(query)
-        #print "getjobpair", resp
-
-    def loginResponseIsOkay(self, resp):
-        return resp != 'ERROR: Invalid username and/or password\n'
-
+def validIdentifier(s):
+    f = lambda c: ( c.isalnum() or c == '_')
+    return all(map(f, s))
 
 def addSpace(dbcur, parent_space_id, space_id, space_name):
     if parent_space_id is None:
@@ -213,10 +110,6 @@ def fillInSpace_rec(pipe, dbcur, parent_id, space_id, space_name, depth):
     print spaces, "fillInSpace_rec(", space_name, "(",space_id,")"
     print "exiting", space_name, "(",space_id,")"
 
-def validIdentifier(s):
-    f = lambda c: ( c.isalnum() or c == '_')
-    return all(map(f, s))
-
 def getValueFromPrimaryKey(dbcur, table, id_name,  primary_key_name, primary_key):
     #print "getValueFromPrimaryKey","(",table, id_name,  primary_key_name, primary_key,")"
 
@@ -283,6 +176,11 @@ def generateSpacePaths(dbcur, sep, root_space_id):
     dbcur.execute(
               """UPDATE Spaces SET path_closed=1
               WHERE space_id=%s""", (root_space_id,))
+
+def setResultToHaveStats(dbcur, result_id):
+    dbcur.execute(
+              """UPDATE Results SET has_stats=1
+              WHERE result_id=%s""", (result_id,))
 
 def setOptionalArg(dbcur, table, key, key_name, arg, arg_name):
     if arg is not None:
@@ -390,7 +288,8 @@ def generateActiveJobPairs(dbcur, job_id):
         """SELECT %s, Configurations.config_id
          FROM Solvers inner join Configurations
          ON Solvers.solver_id=Configurations.solver_id
-         WHERE Solvers.space_id=%s and bin(Solvers.recycled)=0""",
+         WHERE Solvers.space_id=%s
+         and bin(Solvers.recycled)=0 and bin(Configurations.recycled)=0""",
         (job_id, space_id))
     non_recylced_job_config_pairs = dbcur.fetchall()
     print non_recylced_job_config_pairs
@@ -404,19 +303,19 @@ def generateActiveJobPairs(dbcur, job_id):
     print "Generated Job configuration pairs", rcint
 
 
-def parseCSV(csv_file):
+def parseJobInfoCSV(csv_file):
     """Parse CSV file corresponding to job and collect results.
     TODO: sat/unsat result currently corrected from log file
     because starexec postprocessor does not work with stats.
     """
     num_lines = numLinesInFile(csv_file)
-    bar = initializeProgressBar(num_lines - 1)
+    bar = wrappedprogressbar.WrappedProgressBar(num_lines - 1)
     rows = []
     with open(csv_file, 'rb') as csvfile:
         reader = csv.DictReader(csvfile)
 
         for row in reader:
-            bar.update(len(rows))
+            bar.increment()
 
             #pair_id, benchmark id, solver id, configuration id, status,cpu time,wallclock time,result
             pair_id = int(row['pair id'])
@@ -483,7 +382,7 @@ def addResultRows(dbcur, job_id, rows):
 def addCsvFile(dbcur, job_id, csv_file):
     if csv_file is None:
         csv_file = 'Job'+str(job_id)+'_info.csv'
-    rows = parseCSV(csv_file)
+    rows = parseJobInfoCSV(csv_file)
     addResultRows(dbcur, job_id, rows)
 
 def addZippedCsvFile(dbcur, job_id, zip_file, internal_file):
@@ -510,7 +409,7 @@ def postProcessResult(pipe, dbcur, result_id):
                 tmpextract.write(zf.read(name))
                 tmpextract.flush()
 
-                #print subprocess.check_output(['cat', tmpextract.name])
+                print subprocess.check_output(['cat', tmpextract.name])
 
 
 def postprocessResults(pipe, dbcur, job_id):
@@ -522,215 +421,164 @@ def postprocessResults(pipe, dbcur, job_id):
             (job_id,))
     result_ids = dbcur.fetchall()
     assert len(result_ids) == rc
-    bar = initializeProgressBar(rc)
+    bar = wrappedprogressbar.WrappedProgressBar(rc)
     processed = 0
     for (result_id,) in result_ids:
         postProcessResult(pipe, dbcur, result_id)
         processed += 1
-        bar.update(processed)
+        bar.increment()
     print "postprocessResults added", rc,"more benchmarks"
 
-parser = argparse.ArgumentParser(description='Test star exec.')
-parser.add_argument('dbuser',
-                    help="telescope mysql database username")
-parser.add_argument('dbpassword',
-                    help="telescope mysql database password")
-parser.add_argument('--dbtable',
-                    default="telescope",
-                    help="telescope mysql database table")
-parser.add_argument('--dbserver',
-                    default="localhost",
-                    help="telescope mysql database address")
-parser.add_argument('--sep',
-                    default="/",
-                    help="path seperator string")
-parser.add_argument('--commit',
-                    action='store_true',
-                    help="commit the changes to the database")
 
-subparsers = parser.add_subparsers(help='subcommand help')
-
-###########################################
-### parser populate
-###########################################
-parser_pop = subparsers.add_parser('populate',
-                                   help='populate database from star exec. A RARE operation!')
-parser_pop.add_argument('pop_spaceid', type=int,
-                        help="space id to populate from")
-parser_pop.add_argument('spacename', type=str,
-                        help="space name to populate from")
-parser_pop.add_argument('secommand', type=str,
-                        help="location of StarexecCommand.jar")
-parser_pop.add_argument('seuser', type=str,
-                       help="star exec username")
-parser_pop.add_argument('sepassword', type=str,
-                        help="star star password")
-parser_pop.add_argument('--seserver',
-                        default="https://www.starexec.org/starexec/",
-                        help="address of the star exec server")
+def toPostprocessResultsForJob(dbcur, job_id):
+    rc=dbcur.execute(
+        """SELECT Results.result_id
+           FROM JobConfigurationPairs INNER JOIN Results
+           ON JobConfigurationPairs.job_config_pair_id = Results.job_config_pair_id
+           WHERE JobConfigurationPairs.job_id=%s and bin(Results.has_stats)=0 """,
+        (job_id,))
+    result_ids = dbcur.fetchall()
+    assert len(result_ids) == rc
+    return [rid for (rid,) in result_ids]
 
 
-parser_fill_in = subparsers.add_parser('fill-in',
-                                       help='fill in a database from star exec.!')
-parser_fill_in.add_argument('fill_spaceid', type=int,
-                            help="space id to fill in from")
-parser_fill_in.add_argument('spacename', type=str,
-                            help="space name to populate from")
-parser_fill_in.add_argument('secommand', type=str,
-                            help="location of StarexecCommand.jar")
-parser_fill_in.add_argument('seuser', type=str,
-                            help="star exec username")
-parser_fill_in.add_argument('sepassword', type=str,
-                            help="star star password")
-parser_fill_in.add_argument('--seserver',
-                            default="https://www.starexec.org/starexec/",
-                            help="address of the star exec server")
+# subparsers = parser.add_subparsers(help='subcommand help')
+
+# ###########################################
+# ### parser populate
+# ###########################################
+# parser_pop = subparsers.add_parser('populate',
+#                                    help='populate database from star exec. A RARE operation!')
+# parser_pop.add_argument('pop_spaceid', type=int,
+#                         help="space id to populate from")
+# parser_pop.add_argument('spacename', type=str,
+#                         help="space name to populate from")
+# parser_pop.add_argument('secommand', type=str,
+#                         help="location of StarexecCommand.jar")
+# parser_pop.add_argument('seuser', type=str,
+#                        help="star exec username")
+# parser_pop.add_argument('sepassword', type=str,
+#                         help="star star password")
+# parser_pop.add_argument('--seserver',
+#                         default="https://www.starexec.org/starexec/",
+#                         help="address of the star exec server")
 
 
-###########################################
-### generate space paths
-###########################################
-parser_gsp = subparsers.add_parser('generate-space-paths',
-                                   help="""Generates a paths for a space.
-                                           A precursor to making problems sets""")
-parser_gsp.add_argument('gsp_spaceid', type=int,
-                        help="root space id to generate paths from")
+# parser_fill_in = subparsers.add_parser('fill-in',
+#                                        help='fill in a database from star exec.!')
+# parser_fill_in.add_argument('fill_spaceid', type=int,
+#                             help="space id to fill in from")
+# parser_fill_in.add_argument('spacename', type=str,
+#                             help="space name to populate from")
+# parser_fill_in.add_argument('secommand', type=str,
+#                             help="location of StarexecCommand.jar")
+# parser_fill_in.add_argument('seuser', type=str,
+#                             help="star exec username")
+# parser_fill_in.add_argument('sepassword', type=str,
+#                             help="star star password")
+# parser_fill_in.add_argument('--seserver',
+#                             default="https://www.starexec.org/starexec/",
+#                             help="address of the star exec server")
 
 
-###########################################
-### Database addition commands
-###########################################
-parser_aps = subparsers.add_parser('dbadd-problem-set',
-                                    help="""Adds a problem set to the database""")
-parser_aps.add_argument('aps_spaceid', type=int,
-                        help="root space id to generate paths from")
-parser_aps.add_argument('--name', type=str,
-                        help="problem set name")
-parser_aps.add_argument('--description', type=str,
-                        help="problem set description")
+# ###########################################
+# ### generate space paths
+# ###########################################
+# parser_gsp = subparsers.add_parser('generate-space-paths',
+#                                    help="""Generates a paths for a space.
+#                                            A precursor to making problems sets""")
+# parser_gsp.add_argument('gsp_spaceid', type=int,
+#                         help="root space id to generate paths from")
 
 
-parser_asolver = subparsers.add_parser('dbadd-solver',
-                                        help="""Adds a PRE-EXISTING solver to the database""")
-parser_asolver.add_argument('asolver_spaceid', type=int,
-                            help="space id the solver is in")
-parser_asolver.add_argument('solver_id', type=int,
-                            help="solver id")
-parser_asolver.add_argument('--name', type=str,
-                            help="solver name")
-parser_asolver.add_argument('--version', type=str,
-                            help="solver version")
-parser_asolver.add_argument('--description', type=str,
-                            help="solver description")
+# ###########################################
+# ### Database addition commands
+# ###########################################
+# parser_aps = subparsers.add_parser('dbadd-problem-set',
+#                                     help="""Adds a problem set to the database""")
+# parser_aps.add_argument('aps_spaceid', type=int,
+#                         help="root space id to generate paths from")
+# parser_aps.add_argument('--name', type=str,
+#                         help="problem set name")
+# parser_aps.add_argument('--description', type=str,
+#                         help="problem set description")
 
 
-parser_aconfig = subparsers.add_parser('dbadd-config',
-                                        help="""Adds a PRE-EXISTING configuration to the database""")
-parser_aconfig.add_argument('aconfig_id', type=int,
-                        help="configuration id")
-parser_aconfig.add_argument('solver_id', type=int,
-                        help="solver id the configuration is attached to")
-parser_aconfig.add_argument('--name', type=str,
-                        help="configuration name")
-parser_aconfig.add_argument('--description', type=str,
-                        help="configuration description")
+# parser_asolver = subparsers.add_parser('dbadd-solver',
+#                                         help="""Adds a PRE-EXISTING solver to the database""")
+# parser_asolver.add_argument('asolver_spaceid', type=int,
+#                             help="space id the solver is in")
+# parser_asolver.add_argument('solver_id', type=int,
+#                             help="solver id")
+# parser_asolver.add_argument('--name', type=str,
+#                             help="solver name")
+# parser_asolver.add_argument('--version', type=str,
+#                             help="solver version")
+# parser_asolver.add_argument('--description', type=str,
+#                             help="solver description")
 
 
-parser_ajob = subparsers.add_parser(
-    'dbadd-job', help="""Adds a PRE-EXISTING job to the database for an existing problem set""")
-parser_ajob.add_argument('add_job_id', type=int,
-                         help="job id")
-parser_ajob.add_argument('problem_set_id', type=int,
-                         help="problem_set_id the job is attached")
-parser_ajob.add_argument('--name', type=str,
-                         help="configuration name")
-parser_ajob.add_argument('--description', type=str,
-                         help="configuration description")
-parser_ajob.add_argument('--cpu', type=float,
-                         help="cpu time limit of the job")
-parser_ajob.add_argument('--wc', type=float,
-                         help="wall clock time limit of the job")
-parser_ajob.add_argument('--mem', type=int,
-                         help="memory limit of the job")
-parser_ajob.add_argument('--email', type=str,
-                         help="email of the person to the contacted for the job")
-parser_ajob.add_argument('--generate_active_job_pairs',
-                         action='store_true',
-                         help="Populate the table with the active job pairs.")
-
-parser_gajcp = subparsers.add_parser(
-    'generate_active_job_pairs',
-    help="""Populate the table with the configurations for active solvers in the space.""")
-parser_gajcp.add_argument('gen_active_job_id', type=int,
-                         help="job id")
+# parser_gajcp = subparsers.add_parser(
+#     'generate_active_job_pairs',
+#     help="""Populate the table with the configurations for active solvers in the space.""")
+# parser_gajcp.add_argument('gen_active_job_id', type=int,
+#                          help="job id")
 
 
-parser_azipcsv = subparsers.add_parser(
-    'dbadd-zip-results', help="""Adds a star exec job info csv file into the results table""")
-parser_azipcsv.add_argument('add_zip_job_id', type=int,
-                            help="job id")
-parser_azipcsv.add_argument('--zip', type=str,
-                            help="zip csv file. Guesses ./Job<jobid>_info.zip")
-parser_azipcsv.add_argument('--internal', type=str,
-                            help="csv file inside of the zip. Guesses ./Job<jobid>_info.csv")
+# parser_azipcsv = subparsers.add_parser(
+#     'dbadd-zip-results', help="""Adds a star exec job info csv file into the results table""")
+# parser_azipcsv.add_argument('add_zip_job_id', type=int,
+#                             help="job id")
+# parser_azipcsv.add_argument('--zip', type=str,
+#                             help="zip csv file. Guesses ./Job<jobid>_info.zip")
+# parser_azipcsv.add_argument('--internal', type=str,
+#                             help="csv file inside of the zip. Guesses ./Job<jobid>_info.csv")
 
 
-parser_postproc = subparsers.add_parser(
-    'post-job', help="""Adds a star exec job info csv file into the results table""")
-parser_postproc.add_argument('postprocess_job_id', type=int,
-                             help="job id")
-parser_postproc.add_argument('secommand', type=str,
-                             help="location of StarexecCommand.jar")
-parser_postproc.add_argument('seuser', type=str,
-                             help="star exec username")
-parser_postproc.add_argument('sepassword', type=str,
-                             help="star star password")
-parser_postproc.add_argument('--seserver',
-                             default="https://www.starexec.org/starexec/",
-                             help="address of the star exec server")
-
-args = parser.parse_args()
-print "arguments", args
-print
-print
+# args = parser.parse_args()
+# print "arguments", args
+# print
+# print
 
 
-dbcon = mdb.connect(args.dbserver, args.dbuser, args.dbpassword, args.dbtable)
-with dbcon:
-    dbcur = dbcon.cursor()
 
-    if hasattr(args, 'pop_spaceid'):
-        with StarExecPipe(args.secommand, args.seuser, args.sepassword, args.seserver) as pipe:
-            populateSpace(pipe, dbcur, args.pop_spaceid, arsg.spacename, args.sep)
-    if hasattr(args, 'fill_spaceid'):
-        with StarExecPipe(args.secommand, args.seuser, args.sepassword, args.seserver) as pipe:
-            fillInSpace(pipe, dbcur, args.fill_spaceid, args.spacename)
-    elif hasattr(args, 'gsp_spaceid'):
-        generateSpacePaths(dbcur, args.sep, args.gsp_spaceid)
-    elif hasattr(args, 'aps_spaceid'):
-        generateProblemSet(dbcur, args.aps_spaceid, args.name, args.description)
-    elif hasattr(args, 'asolver_spaceid'):
-        addSolver(dbcur, args.solver_id, args.asolver_spaceid,
-                  args.name, args.description, args.version)
-    elif hasattr(args, 'aconfig_id'):
-        addConfig(dbcur, args.aconfig_id, args.solver_id,
-                  args.name, args.description)
-    elif hasattr(args, 'add_job_id'):
-        addJob(dbcur, args.add_job_id, args.problem_set_id,
-               args.name, args.description, args.cpu, args.wc, args.mem,
-               args.email)
-        if args.generate_active_job_pairs:
-            generateActiveJobPairs(dbcur, args.add_job_id)
-    elif hasattr(args, 'gen_active_job_id'):
-        generateActiveJobPairs(dbcur, args.gen_active_job_id)
-    elif hasattr(args, 'add_zip_job_id'):
-        addZippedCsvFile(dbcur, args.add_zip_job_id, args.zip, args.internal)
-    elif hasattr(args, 'postprocess_job_id'):
-        with StarExecPipe(args.secommand, args.seuser, args.sepassword, args.seserver) as pipe:
-            postprocessResults(pipe, dbcur, args.postprocess_job_id)
 
-    if args.commit:
-        dbcon.commit()
-    else:
-        dbcon.rollback()
-dbcon.close()
+# dbcon = mdb.connect(args.dbserver, args.dbuser, args.dbpassword, args.dbtable)
+# with dbcon:
+#     dbcur = dbcon.cursor()
+
+#     if hasattr(args, 'pop_spaceid'):
+#         with StarExecPipe(args.secommand, args.seuser, args.sepassword, args.seserver) as pipe:
+#             populateSpace(pipe, dbcur, args.pop_spaceid, arsg.spacename, args.sep)
+#     if hasattr(args, 'fill_spaceid'):
+#         with StarExecPipe(args.secommand, args.seuser, args.sepassword, args.seserver) as pipe:
+#             fillInSpace(pipe, dbcur, args.fill_spaceid, args.spacename)
+#     elif hasattr(args, 'gsp_spaceid'):
+#         generateSpacePaths(dbcur, args.sep, args.gsp_spaceid)
+#     elif hasattr(args, 'aps_spaceid'):
+#         generateProblemSet(dbcur, args.aps_spaceid, args.name, args.description)
+#     elif hasattr(args, 'asolver_spaceid'):
+#         addSolver(dbcur, args.solver_id, args.asolver_spaceid,
+#                   args.name, args.description, args.version)
+#     elif hasattr(args, 'aconfig_id'):
+#         addConfig(dbcur, args.aconfig_id, args.solver_id,
+#                   args.name, args.description)
+#     elif hasattr(args, 'add_job_id'):
+#         addJob(dbcur, args.add_job_id, args.problem_set_id,
+#                args.name, args.description, args.cpu, args.wc, args.mem,
+#                args.email)
+#         if args.generate_active_job_pairs:
+#             generateActiveJobPairs(dbcur, args.add_job_id)
+#     elif hasattr(args, 'gen_active_job_id'):
+#         generateActiveJobPairs(dbcur, args.gen_active_job_id)
+#     elif hasattr(args, 'add_zip_job_id'):
+#         addZippedCsvFile(dbcur, args.add_zip_job_id, args.zip, args.internal)
+#     elif hasattr(args, 'postprocess_job_id'):
+#         with StarExecPipe(args.secommand, args.seuser, args.sepassword, args.seserver) as pipe:
+#             postprocessResults(pipe, dbcur, args.postprocess_job_id)
+
+#     if args.commit:
+#         dbcon.commit()
+#     else:
+#         dbcon.rollback()
+# dbcon.close()

@@ -102,6 +102,7 @@ Configurations
 | name
 | description
 | timestamp
+| recycled (is the configuration currently active)
 
 create table Configurations
 (
@@ -110,6 +111,7 @@ solver_id int NOT NULL,
 name varchar(255),
 description varchar(255),
 timestamp timestamp default CURRENT_TIMESTAMP,
+recycled bit NOT NULL DEFAULT 0,
 PRIMARY KEY (config_id),
 FOREIGN KEY (solver_id) REFERENCES Solvers(solver_id)
 ) ENGINE=InnoDB;
