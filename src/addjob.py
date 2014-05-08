@@ -3,14 +3,17 @@
 import starexecparser
 import telescope
 
-def toAddJob(te_creds, job_id, problem_set_id, name, description, job_fields, commit):
+def toAddJob(te_creds, job_id, problem_set_id, name, description, job_fields, commit, config_ids):
     dbcon = telescope.connectUsingCredentials(te_creds)
     with dbcon:
         dbcur = dbcon.cursor()
         cpu, wc, mem, email = job_fields
         telescope.addJob(dbcur, job_id, problem_set_id, name, description, cpu, wc, mem, email)
         if gajps:
-            telescope.generateActiveJobPairs(dbcur, job_id)
+            telescope.addJobConfigPairs(dbcur, job_id)
+        print config_ids
+        if config_ids:
+            telescope.addSubsetJobConfigPairs(dbcur, job_id, config_ids)
         if commit:
             dbcon.commit()
         else:
@@ -26,6 +29,7 @@ parser.addOptionalName()
 parser.addOptionalDescription()
 parser.addOptionalJobFields()
 parser.addOptionalGenerateActiveJobPairs()
+parser.addOptionalConfigIdList()
 parser.addCommit()
 
 
@@ -38,5 +42,6 @@ description    = parser.getOptionalDescription()
 job_fields     = parser.getOptionalJobFields()
 commit         = parser.getCommit()
 gajps          = parser.getOptionalGenerateActiveJobPairs()
+config_ids     = parser.getOptionalConfigIdList()
 
-toAddJob(te_creds, job_id, problem_set_id, name, description, job_fields, commit)
+toAddJob(te_creds, job_id, problem_set_id, name, description, job_fields, commit, config_ids)

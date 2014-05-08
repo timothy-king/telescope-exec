@@ -94,7 +94,7 @@ def collectStatisticsFromFile(dbcur, result_id, zf):
     """
     skips = set(['EOF', 'sat', 'unsat'])
     stats = dict()
-    for line in f:
+    for line in zf:
         # find tab
         if line == "\n":
             continue # skip blank lines
@@ -197,4 +197,7 @@ num_workers = parser.getOptionalNumWorkers()
 commit      = parser.getCommit()
 
 
+print "no processing", time.clock()
 postProcessJob(te_creds, se_creds, job_id, num_workers, commit)
+
+print "done", time.clock()

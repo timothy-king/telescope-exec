@@ -82,17 +82,24 @@ Solvers
 | timestamp
 | recycled (is the solver currently active)
 
-create table Solvers
+CREATE TABLE `Solvers` (
+  `solver_id` int(11) NOT NULL,
+  `name` varchar(255) DEFAULT NULL,
+  `description` varchar(255) DEFAULT NULL,
+  `version` varchar(255) DEFAULT NULL,
+  `timestamp` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `recycled` bit(1) NOT NULL DEFAULT b'0',
+  PRIMARY KEY (`solver_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+
+create table SolverToSpacePairs
 (
 solver_id int NOT NULL,
 space_id int NOT NULL,
-name varchar(255),
-description varchar(255),
-version varchar(255),
-timestamp timestamp default CURRENT_TIMESTAMP,
-recycled bit NOT NULL DEFAULT 0,
-PRIMARY KEY (solver_id),
-FOREIGN KEY (space_id) REFERENCES Spaces(space_id)
+PRIMARY KEY (solver_id, space_id),
+FOREIGN KEY (`space_id`) REFERENCES `Spaces` (`space_id`),
+FOREIGN KEY (`solver_id`) REFERENCES `Solvers` (`solver_id`)
 ) ENGINE=InnoDB;
 
 

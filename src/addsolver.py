@@ -3,11 +3,13 @@
 import starexecparser
 import telescope
 
-def toAddConfig(te_creds, config_id, solver_id, name, description, commit):
+
+def toAddSolver(te_creds, solver_id, space_ids, name, description, version, commit):
     dbcon = telescope.connectUsingCredentials(te_creds)
     with dbcon:
         dbcur = dbcon.cursor()
-        telescope.addConfig(dbcur, config_id, solver_id, name, description)
+        telescope.addSolver(dbcur, solver_id, space_ids, name, description, version)
+
         if commit:
             dbcon.commit()
         else:
@@ -15,21 +17,23 @@ def toAddConfig(te_creds, config_id, solver_id, name, description, commit):
     dbcon.close()
 
 
-parser = starexecparser.StarExecParser('Add a config to a solver.')
-parser.addConfigId()
+parser = starexecparser.StarExecParser('Add a solver.')
 parser.addSolverId()
 parser.addTelescopeCredentials()
 parser.addOptionalName()
 parser.addOptionalDescription()
+parser.addOptionalVersion()
 parser.addCommit()
+parser.addOptionalSpaceIdList()
 
 
 parser.processArgs()
 te_creds    = parser.getTelescopeCredentials()
-config_id   = parser.getConfigId()
 solver_id   = parser.getSolverId()
 name        = parser.getOptionalName()
 description = parser.getOptionalDescription()
+version     = parser.getOptionalVersion()
 commit      = parser.getCommit()
+space_ids   = parser.getOptionalSpaceIdList()
 
-toAddConfig(te_creds, config_id, solver_id, name, description, commit)
+toAddSolver(te_creds, solver_id, space_ids, name, description, version, commit)

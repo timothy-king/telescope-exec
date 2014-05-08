@@ -150,3 +150,30 @@ class StarExecParser:
                             help="default number of workers")
     def getOptionalNumWorkers(self):
         return self.args.workers
+
+    def addOptionalConfigIdList(self):
+        self.p.add_argument('--config_ids', type=int, nargs='+',
+                            help='A list of config ids')
+    def getOptionalConfigIdList(self):
+        return self.args.config_ids
+
+    def addOptionalSpaceIdList(self):
+        self.p.add_argument('--space_ids', type=int, nargs='+',
+                            help='A list of space ids')
+    def getOptionalSpaceIdList(self):
+        return self.args.space_ids
+
+
+    def addAddBenchmarks(self):
+        self.p.add_argument('--add_benchmarks',
+                            action='store_true',
+                            help='')
+    def getAddBenchmarks(self):
+        return self.args.add_benchmarks
+
+    def addGenerateSpacePaths(self):
+        self.p.add_argument('--generate_space_paths',
+                            action='store_true',
+                            help='')
+    def getGenerateSpacePaths(self):
+        return self.args.generate_space_paths

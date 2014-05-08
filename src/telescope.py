@@ -69,46 +69,27 @@ def checkRowCount(rc, l):
         "Expect row count %r to match #benchmarks %r" % (rc, l)
 
 
+def populateSpace(pipe, dbcur, space_id, space_name, add_benchmarks, sep):
+    """Populating space"""
+    populateSpace_rec(pipe, dbcur, None, "", space_id, space_name, add_benchmarks, sep)
 
-def populateSpace(pipe, dbcur, space_id, space_name, sep):
-    """Populating space adds benchmarks"""
-    populate_rec(pipe, dbcur, None, "", space_id, space_name, sep)
-
-def populateSpace_rec(pipe, dbcur, parent_id, parent_space_prefix, space_id, space_name, sep):
+def populateSpace_rec(pipe, dbcur, parent_id, parent_space_prefix, space_id, space_name, add_benchmarks, sep):
     space_prefix = parent_space_prefix + sep + space_name
     print "opening", space_prefix, "(",space_id,")"
 
     addSpace(dbcur, parent_id, space_id, space_name)
 
     benchmarks = pipe.lsbenchmarks(space_id)
-    addBenchmarks(dbcur, space_prefix, sep, benchmarks)
+    if add_benchmarks:
+        addBenchmarks(dbcur, space_prefix, sep, benchmarks)
     addBenchmarksToSpaces(dbcur, space_id, benchmarks)
     print "\t", "Added", len(benchmarks), "benchmarks"
 
     subspaces = pipe.lssubspaces(space_id)
     for (sid, name) in subspaces:
-        populateSpace_rec(pipe, dbcur, space_id, space_prefix, sid, name, sep)
+        populateSpace_rec(pipe, dbcur, space_id, space_prefix, sid, name, add_benchmarks, sep)
     print "exiting", space_prefix, "(",space_id,")"
 
-def fillInSpace(pipe, dbcur, space_id, space_name):
-    """Filling in a space does not add new benchmarks"""
-    fillInSpace_rec(pipe, dbcur, None, space_id, space_name, 0)
-
-def fillInSpace_rec(pipe, dbcur, parent_id, space_id, space_name, depth):
-    spaces = " " * depth
-    print spaces, "fillInSpace_rec(", space_name, "(",space_id,")"
-
-    addSpace(dbcur, parent_id, space_id, space_name)
-
-    benchmarks = pipe.lsbenchmarks(space_id)
-    addBenchmarksToSpaces(dbcur, space_id, benchmarks)
-    print spaces, "filled in ", len(benchmarks), "existing benchmarks"
-
-    subspaces = pipe.lssubspaces(space_id)
-    for (sid, name) in subspaces:
-        fillInSpace_rec(pipe, dbcur, space_id, sid, name, depth+1)
-    print spaces, "fillInSpace_rec(", space_name, "(",space_id,")"
-    print "exiting", space_name, "(",space_id,")"
 
 def getValueFromPrimaryKey(dbcur, table, id_name,  primary_key_name, primary_key):
     #print "getValueFromPrimaryKey","(",table, id_name,  primary_key_name, primary_key,")"
@@ -188,8 +169,8 @@ def setOptionalArg(dbcur, table, key, key_name, arg, arg_name):
         rc = dbcur.execute(update_str, (arg, key))
         checkRowCount(rc, 1)
 
-def generateProblemSet(dbcur, ps_space_id, ps_name, ps_description):
-    print "begin generateProblemSet(", ps_space_id, repr(ps_name), repr(ps_description),")"
+def addProblemSet(dbcur, ps_space_id, ps_name, ps_description):
+    print "begin addProblemSet(", ps_space_id, repr(ps_name), repr(ps_description),")"
 
     #Step 1)Sanity check that space paths have been closed for ps_space_id
     rc=dbcur.execute(
@@ -236,20 +217,34 @@ def generateProblemSet(dbcur, ps_space_id, ps_name, ps_description):
         rcint =  0 if rc is None else rc
         totalAdded += rcint
         assert rcint == len(ps2b_values)
-    print "end generateProblemSet(", ps_space_id, repr(ps_name), repr(ps_description),")",
+    print "end addProblemSet(", ps_space_id, repr(ps_name), repr(ps_description),")",
     print "added", totalAdded
 
-def addSolver(dbcur, solver_id,  space_id, name, description, version):
+def addSolverToSpaceIds(dbcur, solver_id, space_ids):
+    to_insert = [(solver_id, space_id) for space_id in space_ids]
+    rc = dbcur.executemany(
+            """INSERT INTO SolverToSpacePairs (solver_id, space_id)
+               VALUES (%s,%s)""", to_insert)
+    rcint =  0 if rc is None else rc
+    assert rcint == len(space_ids)
+
+def addSolverToSpaceIdPair(dbcur, solver_id, space_id):
+    addSolverToSpaceIds(dbcur, solver_id, [space_id])
+
+def addSolver(dbcur, solver_id, space_ids, name, description, version):
     rc = dbcur.execute(
-        """INSERT INTO Solvers (solver_id, space_id)
-        VALUES (%s,%s)""", (solver_id, space_id))
+        """INSERT INTO Solvers (solver_id)
+        VALUES (%s)""", (solver_id))
     checkRowCount(rc, 1)
 
     setOptionalArg(dbcur, 'Solvers', solver_id, 'solver_id', name, 'name')
     setOptionalArg(dbcur, 'Solvers', solver_id, 'solver_id', description, 'description')
     setOptionalArg(dbcur, 'Solvers', solver_id, 'solver_id', version, 'version')
 
-    print "addSolver(", space_id,",",solver_id,",", name,",", description,",", version,")"
+    if space_ids:
+        addSolverToSpaceIds(dbcur, solver_id, space_ids)
+
+    print "addSolver(", solver_id,",", space_ids,",", name,",", description,",", version,")"
 
 
 def addConfig(dbcur, config_id, solver_id, name, description):
@@ -278,29 +273,49 @@ def addJob(dbcur, job_id, problem_set_id, name, description, cpu, wc, mem, email
 
     print "addJob(", job_id, problem_set_id, name, description, cpu, wc, mem, email,")"
 
-
-def generateActiveJobPairs(dbcur, job_id):
-    """ Add all of the non-recycled jobs"""
+def getActiveJobConfigs(dbcur, job_id):
+    """ Add non-recycled configurations to a job"""
     problem_set_id = getProblemSetIdForJob(dbcur, job_id)
     space_id = getSpaceIdForProblemSet(dbcur, problem_set_id)
 
     rc=dbcur.execute(
         """SELECT %s, Configurations.config_id
-         FROM Solvers inner join Configurations
-         ON Solvers.solver_id=Configurations.solver_id
-         WHERE Solvers.space_id=%s
-         and bin(Solvers.recycled)=0 and bin(Configurations.recycled)=0""",
+         FROM SolverToSpacePairs
+         inner join Solvers
+           ON SolverToSpacePairs.solver_id=Solvers.solver_id
+         inner join Configurations
+           ON Solvers.solver_id=Configurations.solver_id
+         WHERE SolverToSpacePairs.space_id=%s
+           and bin(Solvers.recycled)=0
+           and bin(Configurations.recycled)=0""",
         (job_id, space_id))
     non_recylced_job_config_pairs = dbcur.fetchall()
-    print non_recylced_job_config_pairs
+    print non_recycled_job_config_pairs
+    return non_recycled_job_config_pairs
 
+def insertJobConfigPairs(dbcur, job_config_pairs):
     rc=dbcur.executemany(
         """INSERT INTO JobConfigurationPairs (job_id, config_id)
            VALUES (%s,%s)""", non_recylced_job_config_pairs)
     rcint =  0 if rc is None else rc
     assert rcint == len(non_recylced_job_config_pairs)
-
     print "Generated Job configuration pairs", rcint
+
+def addJobConfigPairs(dbcur, job_id):
+    """ Add all of the non-recycled jobs"""
+    non_recycled_job_config_pairs = getActiveJobConfigs(dbcur, job_id)
+    insertJobConfigPairs(dbcur, non_recycled_job_config_pairs)
+
+
+def addSubsetJobConfigPairs(dbcur, job_id, config_ids):
+    """ Add non-recycled configurations to a job"""
+    cids = set(config_ids)
+    jcps = getActiveJobConfigs(dbcur, job_id)
+    func = lambda (j,c): c in cids
+    rem = filter(lambda (j,c): c in cids, jcps)
+    assert len(rem) == len(config_ids)
+    insertJobConfigPairs(dbcur, rem)
+
 
 
 def parseJobInfoCSV(csv_file):
@@ -547,16 +562,19 @@ def toPostprocessResultsForJob(dbcur, job_id):
 # with dbcon:
 #     dbcur = dbcon.cursor()
 
+# handled
 #     if hasattr(args, 'pop_spaceid'):
 #         with StarExecPipe(args.secommand, args.seuser, args.sepassword, args.seserver) as pipe:
 #             populateSpace(pipe, dbcur, args.pop_spaceid, arsg.spacename, args.sep)
 #     if hasattr(args, 'fill_spaceid'):
 #         with StarExecPipe(args.secommand, args.seuser, args.sepassword, args.seserver) as pipe:
 #             fillInSpace(pipe, dbcur, args.fill_spaceid, args.spacename)
+
 #     elif hasattr(args, 'gsp_spaceid'):
 #         generateSpacePaths(dbcur, args.sep, args.gsp_spaceid)
 #     elif hasattr(args, 'aps_spaceid'):
-#         generateProblemSet(dbcur, args.aps_spaceid, args.name, args.description)
+#         addProblemSet(dbcur, args.aps_spaceid, args.name, args.description)
+
 #     elif hasattr(args, 'asolver_spaceid'):
 #         addSolver(dbcur, args.solver_id, args.asolver_spaceid,
 #                   args.name, args.description, args.version)
