@@ -163,6 +163,12 @@ class StarExecParser:
     def getOptionalSpaceIdList(self):
         return self.args.space_ids
 
+    def addSpaceIdList(self):
+        self.p.add_argument('space_ids', type=int, nargs='+',
+                            help='A list of space ids')
+    def getSpaceIdList(self):
+        return self.args.space_ids
+
 
     def addAddBenchmarks(self):
         self.p.add_argument('--add_benchmarks',
@@ -177,3 +183,21 @@ class StarExecParser:
                             help='')
     def getGenerateSpacePaths(self):
         return self.args.generate_space_paths
+
+    def addPostprocessorChoices(self):
+        group = self.p.add_mutually_exclusive_group(required=True)
+        group.add_argument('--none', action='store_true')
+        group.add_argument('--sat_result', action='store_true')
+        group.add_argument('--cvc4_stats', action='store_true')
+        group.add_argument('--glpk', action='store_true')
+        group.add_argument('--scip', action='store_true')
+    def getPostprocessorChoices(self):
+        a = self.args
+        return (a.none, a.sat_result, a.cvc4_stats, a.glpk, a.scip)
+
+    def addAddNewStatistics(self):
+        self.p.add_argument('--add_new_statistics',
+                            action='store_true',
+                            help='Add new statistics dynamically')
+    def getAddNewStatistics(self):
+        return self.args.add_new_statistics

@@ -34,6 +34,293 @@ def connectUsingCredentials(creds):
     return mdb.connect(creds.server(), creds.user(), creds.password(), creds.table())
 
 
+def statIntStr():
+    return 'STAT_INT'
+def statFloatStr():
+    return 'STAT_FLOAT'
+def statStringStr():
+    return 'STAT_STR'
+
+def classify(s):
+    try:
+        try:
+            int(s)
+            return statIntStr()
+        except ValueError:
+            float(s)
+            return statFloatStr()
+    except ValueError:
+        return statStringStr()
+
+class TelescopeResult:
+    def __init__(self, result_id, job_config_pair_id, problem_set_to_benchmark_id, result=None, status=None, cpu_time=None, wallclock_time=None):
+        self.result_id = result_id
+        self.job_config_pair_id = job_config_pair_id
+        self.problem_set_to_benchmark_id = problem_set_to_benchmark_id
+
+        self.stats = dict()
+
+        self.setResult(result)
+        self.setStatus(status)
+        self.setCpuTime(cpu_time)
+        self.setWallclockTime(wallclock_time)
+
+    def getResultId(self):
+        return self.result_id
+
+    def setStatus(self, status):
+        self.status = status
+        assert self.status is None or self.isComplete() or self.isTimeout() or self.isMemout(), status
+    def clearStatus(self):
+        self.status = None
+
+    def getStatus(self):
+        return self.status
+    def setResult(self, result):
+        self.result = result
+        if self.result == "--":
+            self.result = None
+    def getResult(self):
+        return self.result
+    def setCpuTime(self, cpu_time):
+        self.cpu_time = cpu_time
+    def getCpuTime(self):
+        return self.cpu_time
+    def setWallclockTime(self, wallclock_time):
+        self.wallclock_time = wallclock_time
+    def getWallclockTime(self):
+        return self.wallclock_time
+
+    def setStat(self, key, value, classification=None):
+        if classification is None:
+            classification = classify(value)
+        assert classification in [statIntStr(),  statFloatStr(), statStringStr()]
+        self.stats[key] = (value, classification)
+
+    def getStats(self):
+        return self.stats
+
+    def isComplete(self):
+        return self.status == "complete"
+    def isTimeout(self):
+        return self.isCPUTimeout() or self.isWCTimeout()
+    def isCPUTimeout(self):
+        return self.status == "timeout (cpu)"
+    def isWCTimeout(self):
+        return self.status == "timeout (wallclock)"
+    def isMemout(self):
+        return self.status == "memout"
+
+
+# def collectMatchResults(lines, pre_skips, proc, post_skips, matches):
+#     all_matches = []
+#     for line in lines:
+#         if line in pre_skips:
+#             continue
+#         post = proc(line)
+#         if post in post_skips:
+#             continue
+
+#         if post in matches:
+#             all_matches.append(matches[post])
+#     return all_matches
+
+def accumulateMatchesStats(lines, ph0_skips, ph1, ph1_skips, ph1_errors, ph1_matches, ph2):
+    all_matches = []
+    all_stats = dict()
+    for ph0_ln in lines:
+        #print ph0_ln
+        if ph0_ln in ph0_skips:
+            continue
+        ph1_ln = ph1(ph0_ln)
+        if ph1_ln in ph1_skips:
+            continue
+
+        if ph1_ln in ph1_errors:
+            all_matches.append('error')
+            break
+
+        if ph1_ln in ph1_matches:
+            all_matches.append(ph1_matches[ph1_ln])
+        else:
+            ph2_res = ph2(ph1_ln)
+            if ph2_res:
+                #print ph2_res
+                key,value = ph2_res
+                all_stats[key] = value
+    return all_matches, all_stats
+
+def partitionOn(line, s):
+    pre,part,post = line.partition(s)
+    #print repr(time),repr(tab),repr(rem), repr(line)
+    assert part == s
+    return (pre.strip(), post.strip())
+
+class ResultProcessor (object):
+    def __init__(self):
+        pass
+    def apply(self, res, lines):
+        """By default do nothing"""
+        return False
+
+class StarExecCollectMatches (ResultProcessor):
+    def __init__(self, matches):
+        self.ph0_skips = set(["\n"])
+        self.ph1_skips = set(["EOF"])
+        self.ph1_errors = set([])
+        self.ph1_matches = matches
+        self.ph2 = lambda x : False
+
+    def apply(self, res, lines):
+        pot = lambda x : (partitionOn(x,'\t'))[1]
+        ph0_skips = self.ph0_skips
+        ph1_skips = self.ph1_skips
+        ph1_errors = self.ph1_errors
+        ph1_matches = self.ph1_matches
+        ph2 = self.ph2
+        try:
+            ms,ss = accumulateMatchesStats(lines, ph0_skips, pot, ph1_skips, ph1_errors, ph1_matches, ph2)
+        except:
+            print "exception during processing", res.getResultId()
+            raise
+        setSomething = False
+        if len(ms) >= 1:
+            first = ms[0]
+            if all(map(lambda x: first == x, ms)):
+                res.setResult(first)
+                setSomething = True
+            else:
+                raise Exception("Multiple different results", ms)
+        else:
+            res.setResult("unknown")
+            raise Exception, res.getResultId()
+
+        for key, value in ss.iteritems():
+            res.setStat(key, value)
+            setSomething = True
+        return setSomething
+
+
+class GlpkCollectMatches (StarExecCollectMatches):
+    def __init__(self):
+        glpkmatches = dict([('PROBLEM HAS NO INTEGER FEASIBLE SOLUTION', 'unsat'),
+                            ('PROBLEM HAS NO PRIMAL FEASIBLE SOLUTION', 'unsat'),
+                            ('LP HAS NO PRIMAL FEASIBLE SOLUTION', 'unsat'),
+                            ('INTEGER OPTIMAL SOLUTION FOUND', 'sat'),
+                            ('OPTIMAL SOLUTION FOUND', 'sat')])
+        super(GlpkCollectMatches,self).__init__(glpkmatches)
+
+class ScipCollectMatches (StarExecCollectMatches):
+    def __init__(self):
+        scipmatches = dict([('SCIP Status        : problem is solved [infeasible]', 'unsat'),
+                            ('SCIP Status        : problem is solved [optimal solution found]', 'sat'),
+                            ('SCIP Error (-16): maximal branching depth level exceeded', 'unknown')])
+        super(ScipCollectMatches,self).__init__(scipmatches)
+
+class SatUnsatCollectMatches (StarExecCollectMatches):
+    def __init__(self):
+        satunsatmatches = dict([('unsat', 'unsat'),
+                                ('sat', 'sat')])
+        super(SatUnsatCollectMatches, self).__init__(satunsatmatches)
+
+class CVC4StatsCollectMatches (SatUnsatCollectMatches):
+    def __init__(self):
+        super(CVC4StatsCollectMatches,self).__init__()
+        self.ph2 = lambda x: partitionOn(x,', ')
+        self.ph1_errors = set(['CVC4 suffered a segfault.',
+                               'CVC4 threw an "unexpected" exception.'])
+
+
+def getResult(dbcur, result_id, keep_result=None, keep_status=None, keep_cpu_time=None, keep_wallclock_time=None):
+    rc=dbcur.execute(
+              """SELECT result_id, job_config_pair_id, problem_set_to_benchmark_id,
+                        result, status, cpu_time, wallclock_time
+              FROM Results WHERE result_id=%s""", (result_id,))
+    assert rc==1
+    fet = dbcur.fetchone()
+    res = TelescopeResult(fet[0], fet[1], fet[2])
+    if keep_result:
+        res.setResult(fet[3])
+    if keep_status:
+        res.setStatus(fet[4])
+    if keep_cpu_time:
+        res.setCpuTime(fet[5])
+    if keep_wallclock_time:
+        res.setWallclockTime(fet[6])
+    return res
+
+def writeResult(dbcur, res, add_stats):
+    assert isinstance(res, TelescopeResult)
+    result_id = res.getResultId()
+
+    stats = res.getStats()
+    result = res.getResult()
+    status = res.getStatus()
+    cpu_time = res.getCpuTime()
+    wallclock_time = res.getWallclockTime()
+
+    #Step 1)Sanity check that the result has not been processed
+    rc=dbcur.execute(
+              """SELECT bin(has_stats) FROM Results
+              WHERE result_id=%s""", (result_id,))
+    assert rc==1
+    fet = dbcur.fetchone()
+    #print fet
+    assert fet[0] == '0', "Stats must not be set for this result"
+
+    #print result_id, result
+
+    #print 'result', result
+    setOptionalArg(dbcur, 'Results', result_id, 'result_id', result, 'result')
+    setOptionalArg(dbcur, 'Results', result_id, 'result_id', status, 'status')
+    setOptionalArg(dbcur, 'Results', result_id, 'result_id', cpu_time, 'cpu_time')
+    setOptionalArg(dbcur, 'Results', result_id, 'result_id', wallclock_time, 'wallclock_time')
+
+    for name, (value, classification) in stats.iteritems():
+        stat_id = safelyGetStatId(dbcur, name, classification, add_stats)
+        writeStatResult(dbcur, result_id, stat_id, value, classification)
+
+def safelyGetStatId(dbcur, name, classification, add_stats):
+    stat_id = maybeSelectPrimaryKey(dbcur, 'Statistics', 'stat_id', 'name',  name)
+    if stat_id is None:
+        if add_stats:
+            stat_id = addStatistic(dbcur, name, classification)
+        else:
+            raise Exception, ("Could not find statistic "+repr(name))
+    else:
+        stat_class = getValueFromPrimaryKey(dbcur, 'Statistics', 'stat_type', 'stat_id', stat_id)
+        assert stat_class == classification, "Classification does not match"
+    return stat_id
+
+def addStatistic(dbcur, name, classificiation):
+    rc=dbcur.execute("""INSERT INTO  Statistics (name, stat_type)
+                     VALUES (%s,%s)""",
+                     (name, classificiation ))
+    checkRowCount(rc, 1)
+    stat_id = maybeSelectPrimaryKey(dbcur, 'Statistics', 'stat_id', 'name',  name)
+    assert stat_id is not None
+    return stat_id
+
+def writeStatResult(dbcur, result_id, stat_id, value, classification):
+    if classification == statIntStr():
+        rc=dbcur.execute("""INSERT INTO  StatisticResults (result_id, stat_id, int_value)
+                     VALUES (%s,%s,%s)""",
+                     (result_id, stat_id, int(value) ))
+        checkRowCount(rc, 1)
+    elif classification == statFloatStr():
+        rc=dbcur.execute("""INSERT INTO  StatisticResults (result_id, stat_id, float_value)
+                     VALUES (%s,%s,%s)""",
+                     (result_id, stat_id, float(value) ))
+        checkRowCount(rc, 1)
+
+    elif classification == statStringStr():
+        rc=dbcur.execute("""INSERT INTO  StatisticResults (result_id, stat_id, string_value)
+                     VALUES (%s,%s,%s)""",
+                     (result_id, stat_id, value ))
+        checkRowCount(rc, 1)
+    else:
+        raise Exception('Bad classification string', classification)
+
 def validIdentifier(s):
     f = lambda c: ( c.isalnum() or c == '_')
     return all(map(f, s))
@@ -91,6 +378,20 @@ def populateSpace_rec(pipe, dbcur, parent_id, parent_space_prefix, space_id, spa
     print "exiting", space_prefix, "(",space_id,")"
 
 
+def maybeSelectPrimaryKey(dbcur, table, primary_key_name, key_name,  key):
+    assert validIdentifier(table)
+    assert validIdentifier(primary_key_name)
+    assert validIdentifier(key_name)
+
+    sql_query='SELECT ' + primary_key_name +' FROM ' + table + ' WHERE '+ key_name +'=%s'
+    rc=dbcur.execute(sql_query, (key,))
+    assert rc <= 1
+    if rc == 0:
+        return None
+    else:
+        fet = dbcur.fetchone()
+        return int(fet[0])
+
 def getValueFromPrimaryKey(dbcur, table, id_name,  primary_key_name, primary_key):
     #print "getValueFromPrimaryKey","(",table, id_name,  primary_key_name, primary_key,")"
 
@@ -133,6 +434,12 @@ def getBenchIdFromProblemSetToBenchmarks(dbcur, problem_set_to_benchmark_id):
     return getIdFromPrimaryKey(dbcur, "ProblemSetToBenchmarks", "bench_id", "problem_set_to_benchmark_id",
                                problem_set_to_benchmark_id)
 
+
+
+def getBenchIdFromResultId(dbcur, result_id):
+    problem_set_to_benchmark_id = getProblemSetToBenchmarkIdFromResult(dbcur, result_id)
+    return getBenchIdFromProblemSetToBenchmarks(dbcur, problem_set_to_benchmark_id)
+
 def generateSpacePaths_rec(dbcur, sep, root_space_id, pre_path_string, space_id):
     space_name = getSpaceName(dbcur, space_id)
     path_string = pre_path_string + space_name
@@ -167,7 +474,8 @@ def setOptionalArg(dbcur, table, key, key_name, arg, arg_name):
     if arg is not None:
         update_str='Update '+table+' SET '+arg_name+'=%s WHERE '+key_name+'=%s'
         rc = dbcur.execute(update_str, (arg, key))
-        checkRowCount(rc, 1)
+        if rc != 0 and rc != 1:
+            checkRowCount(rc, 1)
 
 def addProblemSet(dbcur, ps_space_id, ps_name, ps_description):
     print "begin addProblemSet(", ps_space_id, repr(ps_name), repr(ps_description),")"
@@ -289,16 +597,16 @@ def getActiveJobConfigs(dbcur, job_id):
            and bin(Solvers.recycled)=0
            and bin(Configurations.recycled)=0""",
         (job_id, space_id))
-    non_recylced_job_config_pairs = dbcur.fetchall()
+    non_recycled_job_config_pairs = dbcur.fetchall()
     print non_recycled_job_config_pairs
     return non_recycled_job_config_pairs
 
 def insertJobConfigPairs(dbcur, job_config_pairs):
     rc=dbcur.executemany(
         """INSERT INTO JobConfigurationPairs (job_id, config_id)
-           VALUES (%s,%s)""", non_recylced_job_config_pairs)
+           VALUES (%s,%s)""", job_config_pairs)
     rcint =  0 if rc is None else rc
-    assert rcint == len(non_recylced_job_config_pairs)
+    assert rcint == len(job_config_pairs)
     print "Generated Job configuration pairs", rcint
 
 def addJobConfigPairs(dbcur, job_id):
@@ -313,6 +621,7 @@ def addSubsetJobConfigPairs(dbcur, job_id, config_ids):
     jcps = getActiveJobConfigs(dbcur, job_id)
     func = lambda (j,c): c in cids
     rem = filter(lambda (j,c): c in cids, jcps)
+    print rem, config_ids
     assert len(rem) == len(config_ids)
     insertJobConfigPairs(dbcur, rem)
 
